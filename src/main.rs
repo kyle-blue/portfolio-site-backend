@@ -1,29 +1,19 @@
-/**
- * Make a server with:
- *    port, handlers (which allow middleware), overall middleware,
- *
- * Define routes
- *
- * Defined methods
- *
- * Defined error codes
- *
- * Main server run function
- *
- * Async thread handle function
- */
+mod http;
+use std::{collections::HashMap, sync::Arc};
 
-fn root_handler() {}
+use http::core::*;
+
+route!(root_handler, { Propogation::Stop });
 
 #[tokio::main]
 async fn main() {
+    let server = Server {
+        port: 8080,
+        middleware: Arc::new(Vec::new()),
+        handlers: HashMap::new(),
+    };
 
-    // let server = Server {
-    //     port: 8080,
-    //     middleware: [],
-    // }
+    server.route(HttpMethod::GET, "/", root_handler);
 
-    // server.route(HTTPMethod::Get, "/", root_handler);
-
-    // server.start().await?;
+    server.start().await;
 }
