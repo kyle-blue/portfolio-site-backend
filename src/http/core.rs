@@ -10,8 +10,13 @@ use chrono::Utc;
 use glob::Pattern;
 use once_cell::sync::Lazy;
 use regex::Regex;
-use tokio::io::AsyncReadExt;
-use tokio::net::TcpListener;
+use strum::IntoEnumIterator;
+use strum_macros::EnumIter;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use url::Url;
+
+use super::http::get_status_text;
 
 /**
  * Make a server with:
@@ -46,7 +51,7 @@ static URI_PARAM_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r":[\w-]+").unwrap
 #[derive(Clone)]
 pub struct Request {
     method: HttpMethod,
-    uri: String,
+    path: String,
     version: String,
     headers: HashMap<String, String>,
     body: Option<Vec<u8>>,
@@ -55,13 +60,15 @@ pub struct Request {
 }
 
 pub struct Response {
-    headers: HashMap<String, String>,
-    body: Option<Vec<u8>>,
+    pub headers: HashMap<String, String>,
+    pub body: Option<Vec<u8>>,
+    pub status_code: u16,
+    status_text: String,
 }
 impl Response {
-    fn new() -> Self {
+    pub fn new() -> Self {
         let mut headers: HashMap<String, String> = HashMap::new();
-        headers.insert("Content-Type".to_owned(), "application/json".to_owned());
+        headers.insert("content-type".to_owned(), "application/json".to_owned());
 
         let now = Utc::now();
         let format = StrftimeItems::new("%a, %d %b %Y %H:%M:%S GMT");
@@ -70,12 +77,28 @@ impl Response {
         return Self {
             headers,
             body: None,
+            status_code: 200,
+            status_text: get_status_text(200).to_owned(),
         };
+    }
+    pub fn get_body_as_string(&self) -> String {
+        return String::from_utf8(self.body.clone().unwrap_or_default()).unwrap();
+    }
+    pub fn set_status_code(&mut self, code: u16) {
+        self.status_code = code;
+        self.status_text = get_status_text(code).to_owned();
+    }
+    pub fn set_body(&mut self, data: Vec<u8>) {
+        self.body = Some(data);
+    }
+    pub fn add_header(&mut self, key: &str, value: &str) {
+        self.headers
+            .insert(key.to_string().to_lowercase(), value.to_string());
     }
 }
 
 impl Request {
-    fn get_body_as_string(&self) -> String {
+    pub fn get_body_as_string(&self) -> String {
         return String::from_utf8(self.body.clone().unwrap_or_default()).unwrap();
     }
 }
@@ -93,7 +116,7 @@ pub struct Route {
     params: Vec<RouteParam>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, EnumIter)]
 pub enum HttpMethod {
     #[default]
     GET,
@@ -106,6 +129,23 @@ pub enum HttpMethod {
     TRACE,
     PATCH,
     OTHER(String),
+}
+
+impl HttpMethod {
+    fn from_str(s: &str) -> Self {
+        match s {
+            "GET" => HttpMethod::GET,
+            "POST" => HttpMethod::POST,
+            "PUT" => HttpMethod::PUT,
+            "DELETE" => HttpMethod::DELETE,
+            "HEAD" => HttpMethod::HEAD,
+            "OPTIONS" => HttpMethod::OPTIONS,
+            "CONNECT" => HttpMethod::CONNECT,
+            "TRACE" => HttpMethod::TRACE,
+            "PATCH" => HttpMethod::PATCH,
+            _ => HttpMethod::OTHER(s.to_string()),
+        }
+    }
 }
 
 #[macro_export]
@@ -131,10 +171,15 @@ pub struct Server {
 
 impl Server {
     pub fn new(port: u32) -> Self {
+        let mut handlers = HashMap::new();
+        for method in HttpMethod::iter() {
+            handlers.insert(method, Vec::new());
+        }
+
         Server {
             port,
             middleware: Arc::new(Vec::new()),
-            handlers: HashMap::new(),
+            handlers,
         }
     }
 
@@ -188,11 +233,15 @@ impl Server {
             .await
             .expect(format!("Could not bind TCP listener to: {}", address).as_str());
 
+        println!("Accepting incoming connections on {}", address);
+
         loop {
-            let (mut stream, _) = listener
+            let (mut stream, incoming) = listener
                 .accept()
                 .await
                 .expect("Could not accept connection");
+
+            println!("Incoming request from {}", incoming.ip().to_string());
 
             let handlers = self.handlers.clone();
 
@@ -202,41 +251,47 @@ impl Server {
                 let mut all_stream_data = Vec::new();
                 loop {
                     let mut buffer: [u8; 8192] = [0; 8192]; // 8kb
-                    let _ = stream.read(&mut buffer);
+                    let num_bytes = stream.read(&mut buffer).await;
                     all_stream_data.extend(&buffer);
 
-                    let request_match: Result<Request, ()> = parse_request(&all_stream_data);
+                    if num_bytes.unwrap() == 0 {
+                        // End of request
+                        return;
+                    }
+
+                    let request_match = parse_request(&all_stream_data);
 
                     request = match request_match {
                         Ok(req) => req,
-                        Err(()) => continue, // Incomplete request
+                        _ => continue, // Incomplete request
                     };
                     break;
                 }
 
-                // blah/*   blah/:id/
-
                 for val in handlers.get(&request.method).unwrap_or(&Vec::new()).iter() {
                     let pattern = Pattern::new(&val.route.path).unwrap();
-                    let is_match = pattern.matches(&request.uri);
+                    let is_match = pattern.matches(&request.path);
                     if is_match {
                         if val.route.params.len() != 0 {
-                            fn extract_nth_segment(url: &str, n: usize) -> Option<String> {
+                            fn extract_nth_segment(url_path: &str, n: usize) -> Option<String> {
                                 let pattern = format!(r"^(?:[^/]*/){{{}}}(\w+)", n); // Replace {N} dynamically
                                 let regex = Regex::new(&pattern).unwrap();
 
-                                regex.captures(url).map(|cap| cap[1].to_string())
-                                // Extract match
+                                regex.captures(url_path).map(|cap| cap[1].to_string())
                             }
                             for param in val.route.params.iter() {
-                                extract_nth_segment(&request.uri, param.num_slashes_before);
+                                let maybe_param_value =
+                                    extract_nth_segment(&request.path, param.num_slashes_before);
+                                if let Some(param_value) = maybe_param_value {
+                                    request.params.insert(param.name.to_string(), param_value);
+                                }
                             }
                         }
 
                         let maybe_response = (val.handler)(request.clone()).await;
                         match maybe_response {
                             Some(response) => {
-                                return_response(response);
+                                return_response(response, &mut stream).await;
                                 break;
                             }
                             None => {}
@@ -246,12 +301,67 @@ impl Server {
             });
         }
 
-        fn return_response(response: Response) {}
+        async fn return_response(response: Response, stream: &mut TcpStream) {
+            let response_string = format!(
+                "HTTP/1.1 {} {}\r\n{}\r\n\r\n{}",
+                response.status_code,
+                response.status_text,
+                response
+                    .headers
+                    .iter()
+                    .map(|(key, value)| format!("{}: {}", key, value))
+                    .collect::<Vec<_>>()
+                    .join("\r\n"),
+                response.get_body_as_string(),
+            );
 
-        fn parse_request(buffer: &Vec<u8>) -> Result<Request, ()> {
-            return Err(());
+            stream.write(response_string.as_bytes()).await.unwrap();
+            stream.flush().await.unwrap();
         }
 
+        fn parse_request(buffer: &Vec<u8>) -> Result<Request, Box<dyn std::error::Error>> {
+            let mut headers = [httparse::EMPTY_HEADER; 64];
+            let mut req = httparse::Request::new(&mut headers);
+
+            let res = match req.parse(&buffer)? {
+                httparse::Status::Complete(amt) => amt,
+                httparse::Status::Partial => {
+                    return Err("Request is incomplete".into());
+                }
+            };
+
+            let method = HttpMethod::from_str(req.method.ok_or("Method not found")?);
+            let url_str = req.path.ok_or("URI not found")?.to_string();
+            let version = req.version.ok_or("Version not found")?.to_string();
+
+            let mut headers_map = HashMap::new();
+            for header in req.headers.iter() {
+                let name = header.name.to_string();
+                let value = std::str::from_utf8(header.value)?.to_string();
+                headers_map.insert(name, value);
+            }
+
+            let body = if res < buffer.len() {
+                Some(buffer[res..].to_vec())
+            } else {
+                None
+            };
+
+            let mut url = Url::parse(format!("https://a.b{}", url_str).as_str())
+                .expect("Failed to parse URL");
+            let query: HashMap<String, String> = url.query_pairs().into_owned().collect();
+            url.set_query(None);
+
+            Ok(Request {
+                path: url.path().to_string(),
+                version,
+                body,
+                headers: headers_map,
+                method,
+                params: HashMap::new(),
+                query,
+            })
+        }
         // Create TCP listener
         // On call spawn tokio task
         //   tokio task parses tcp to html, calls all middleware and the correct handler
