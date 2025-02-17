@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use chrono::format::strftime::StrftimeItems;
 use chrono::Utc;
-use glob::Pattern;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use strum::IntoEnumIterator;
@@ -48,15 +47,25 @@ type RouteHandler = Arc<RouteHandlerFunc>;
 // Lazily inits static value
 static URI_PARAM_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r":[\w-]+").unwrap());
 
+fn glob_to_regex(glob: &str) -> String {
+    let regex_pattern = glob
+        .replace('.', r"\.") // Escape `.`
+        .replace("**", ".+") // Allow ** to match anything
+        .replace("/*/", r"/[^/]+/") // Ensure `*` only matches segment
+        .replace('*', "[^/]+"); // Ensure other `*` work too
+
+    format!(r"^{}$", regex_pattern) // Anchor start and end
+}
+
 #[derive(Clone)]
 pub struct Request {
-    method: HttpMethod,
-    path: String,
-    version: String,
-    headers: HashMap<String, String>,
-    body: Option<Vec<u8>>,
-    params: HashMap<String, String>,
-    query: HashMap<String, String>,
+    pub method: HttpMethod,
+    pub path: String,
+    pub version: String,
+    pub headers: HashMap<String, String>,
+    pub body: Option<Vec<u8>>,
+    pub params: HashMap<String, String>,
+    pub query: HashMap<String, String>,
 }
 
 pub struct Response {
@@ -103,13 +112,13 @@ impl Request {
     }
 }
 
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct RouteParam {
     num_slashes_before: usize,
     name: String,
 }
 
-#[derive(Hash, PartialEq, Eq, Clone, Default)]
+#[derive(Hash, PartialEq, Eq, Clone, Default, Debug)]
 pub struct Route {
     method: HttpMethod,
     path: String,
@@ -150,15 +159,15 @@ impl HttpMethod {
 
 #[macro_export]
 macro_rules! route {
-    ($function_name:ident, $handler_block:block) => {
+    ($function_name:ident, $handler_block:expr) => {
         #[allow(unused_variables)]
         fn $function_name(request: Request) -> RouteHandlerReturn {
-            return Box::pin(async move $handler_block);
+            return Box::pin(async move { $handler_block(request) });
         }
     };
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct RouteAndHandler {
     route: Route,
     handler: RouteHandler,
@@ -184,13 +193,18 @@ impl Server {
     }
 
     pub fn route(&mut self, method: HttpMethod, path: &str, handler: RouteHandlerFunc) {
+        let mut norm_path = if path.ends_with("/") {
+            path.to_string()
+        } else {
+            format!("{}/", path)
+        };
         let route_handlers = self.handlers.get_mut(&method).unwrap();
 
         // Extract params if they exist
         let mut params = Vec::new();
-        for m in URI_PARAM_REGEX.find_iter(&path) {
+        for m in URI_PARAM_REGEX.find_iter(&norm_path) {
             let start = m.start();
-            let before = &path[..start].to_owned();
+            let before = &norm_path[..start].to_owned();
             let num_slashes_before = before.matches("/").count();
             let name = m.as_str()[1..].to_owned();
             params.push({
@@ -200,12 +214,13 @@ impl Server {
                 }
             })
         }
-        URI_PARAM_REGEX.replace_all(path, "*");
+        norm_path = URI_PARAM_REGEX.replace_all(&norm_path, "*").to_string();
+        norm_path = glob_to_regex(&norm_path);
 
         route_handlers.push(RouteAndHandler {
             route: Route {
                 method,
-                path: path.to_owned(),
+                path: norm_path,
                 params,
             },
             handler: Arc::new(handler),
@@ -217,7 +232,13 @@ impl Server {
             let b_num_slashes = b.route.path.matches("/").count();
             let comparison = a_num_slashes.cmp(&b_num_slashes).reverse();
             if comparison == Ordering::Equal {
-                let comparison = a.route.params.len().cmp(&b.route.params.len()).reverse();
+                let a_true_len = a.route.path.len()
+                    - (a.route.path.matches("[^/]+").count() * 5)
+                    - (a.route.path.matches(".+").count() * 3);
+                let b_true_len = b.route.path.len()
+                    - (b.route.path.matches("[^/]+").count() * 5)
+                    - (b.route.path.matches(".+").count() * 3);
+                let comparison = a_true_len.cmp(&b_true_len);
                 if comparison == Ordering::Equal {
                     return a.route.params.len().cmp(&b.route.params.len()).reverse();
                 }
@@ -225,6 +246,8 @@ impl Server {
             }
             comparison
         });
+
+        println!("{:?}", route_handlers)
     }
 
     pub async fn start(&self) -> Result<(), Box<dyn Error>> {
@@ -269,8 +292,8 @@ impl Server {
                 }
 
                 for val in handlers.get(&request.method).unwrap_or(&Vec::new()).iter() {
-                    let pattern = Pattern::new(&val.route.path).unwrap();
-                    let is_match = pattern.matches(&request.path);
+                    let pattern = Regex::new(&val.route.path).unwrap();
+                    let is_match = pattern.is_match(&request.path);
                     if is_match {
                         if val.route.params.len() != 0 {
                             fn extract_nth_segment(url_path: &str, n: usize) -> Option<String> {
@@ -352,8 +375,12 @@ impl Server {
             let query: HashMap<String, String> = url.query_pairs().into_owned().collect();
             url.set_query(None);
 
+            let mut path = url.path().to_string();
+            if !path.ends_with("/") {
+                path.push_str("/")
+            }
             Ok(Request {
-                path: url.path().to_string(),
+                path,
                 version,
                 body,
                 headers: headers_map,
