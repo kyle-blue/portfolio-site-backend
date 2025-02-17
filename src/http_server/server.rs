@@ -5,32 +5,22 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use chrono::format::strftime::StrftimeItems;
-use chrono::Utc;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use strum::IntoEnumIterator;
-use strum_macros::EnumIter;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use url::Url;
 
-use super::http::get_status_text;
+use crate::http_server::util::extract_nth_segment_from_url;
+use crate::http_server::{ONE_KB, ONE_MB};
 
-/**
- * Make a server with:
- *    port, handlers (which allow middleware), overall middleware,
- *
- * Define routes
- *
- * Defined methods
- *
- * Defined error codes
- *
- * Main server run function
- *
- * Async thread handle function
- */
+use super::util::normalise_path;
+
+use super::constants::HttpMethod;
+use super::request::Request;
+use super::response::Response;
+use super::util::glob_to_regex;
 
 /**  Async function that returns T (and can be used in multithreading env (send)).
 Rust can't statically define types that return traits yet, since traits are implemented differently and have different sizes
@@ -47,71 +37,6 @@ type RouteHandler = Arc<RouteHandlerFunc>;
 // Lazily inits static value
 static URI_PARAM_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r":[\w-]+").unwrap());
 
-fn glob_to_regex(glob: &str) -> String {
-    let regex_pattern = glob
-        .replace('.', r"\.") // Escape `.`
-        .replace("**", ".+") // Allow ** to match anything
-        .replace("/*/", r"/[^/]+/") // Ensure `*` only matches segment
-        .replace('*', "[^/]+"); // Ensure other `*` work too
-
-    format!(r"^{}$", regex_pattern) // Anchor start and end
-}
-
-#[derive(Clone)]
-pub struct Request {
-    pub method: HttpMethod,
-    pub path: String,
-    pub version: String,
-    pub headers: HashMap<String, String>,
-    pub body: Option<Vec<u8>>,
-    pub params: HashMap<String, String>,
-    pub query: HashMap<String, String>,
-}
-
-pub struct Response {
-    pub headers: HashMap<String, String>,
-    pub body: Option<Vec<u8>>,
-    pub status_code: u16,
-    status_text: String,
-}
-impl Response {
-    pub fn new() -> Self {
-        let mut headers: HashMap<String, String> = HashMap::new();
-        headers.insert("content-type".to_owned(), "application/json".to_owned());
-
-        let now = Utc::now();
-        let format = StrftimeItems::new("%a, %d %b %Y %H:%M:%S GMT");
-        headers.insert("Date".to_owned(), now.format_with_items(format).to_string());
-
-        return Self {
-            headers,
-            body: None,
-            status_code: 200,
-            status_text: get_status_text(200).to_owned(),
-        };
-    }
-    pub fn get_body_as_string(&self) -> String {
-        return String::from_utf8(self.body.clone().unwrap_or_default()).unwrap();
-    }
-    pub fn set_status_code(&mut self, code: u16) {
-        self.status_code = code;
-        self.status_text = get_status_text(code).to_owned();
-    }
-    pub fn set_body(&mut self, data: Vec<u8>) {
-        self.body = Some(data);
-    }
-    pub fn add_header(&mut self, key: &str, value: &str) {
-        self.headers
-            .insert(key.to_string().to_lowercase(), value.to_string());
-    }
-}
-
-impl Request {
-    pub fn get_body_as_string(&self) -> String {
-        return String::from_utf8(self.body.clone().unwrap_or_default()).unwrap();
-    }
-}
-
 #[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct RouteParam {
     num_slashes_before: usize,
@@ -125,48 +50,6 @@ pub struct Route {
     params: Vec<RouteParam>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, EnumIter)]
-pub enum HttpMethod {
-    #[default]
-    GET,
-    POST,
-    PUT,
-    DELETE,
-    HEAD,
-    OPTIONS,
-    CONNECT,
-    TRACE,
-    PATCH,
-    OTHER(String),
-}
-
-impl HttpMethod {
-    fn from_str(s: &str) -> Self {
-        match s {
-            "GET" => HttpMethod::GET,
-            "POST" => HttpMethod::POST,
-            "PUT" => HttpMethod::PUT,
-            "DELETE" => HttpMethod::DELETE,
-            "HEAD" => HttpMethod::HEAD,
-            "OPTIONS" => HttpMethod::OPTIONS,
-            "CONNECT" => HttpMethod::CONNECT,
-            "TRACE" => HttpMethod::TRACE,
-            "PATCH" => HttpMethod::PATCH,
-            _ => HttpMethod::OTHER(s.to_string()),
-        }
-    }
-}
-
-#[macro_export]
-macro_rules! route {
-    ($function_name:ident, $handler_block:expr) => {
-        #[allow(unused_variables)]
-        fn $function_name(request: Request) -> RouteHandlerReturn {
-            return Box::pin(async move { $handler_block(request) });
-        }
-    };
-}
-
 #[derive(Clone, Debug)]
 struct RouteAndHandler {
     route: Route,
@@ -174,8 +57,8 @@ struct RouteAndHandler {
 }
 pub struct Server {
     pub port: u32,
-    pub handlers: HashMap<HttpMethod, Vec<RouteAndHandler>>,
     pub middleware: Middleware,
+    handlers: HashMap<HttpMethod, Vec<RouteAndHandler>>,
 }
 
 impl Server {
@@ -193,14 +76,10 @@ impl Server {
     }
 
     pub fn route(&mut self, method: HttpMethod, path: &str, handler: RouteHandlerFunc) {
-        let mut norm_path = if path.ends_with("/") {
-            path.to_string()
-        } else {
-            format!("{}/", path)
-        };
+        let mut norm_path = normalise_path(&path);
         let route_handlers = self.handlers.get_mut(&method).unwrap();
 
-        // Extract params if they exist
+        // Extract request params if they exist
         let mut params = Vec::new();
         for m in URI_PARAM_REGEX.find_iter(&norm_path) {
             let start = m.start();
@@ -214,6 +93,7 @@ impl Server {
                 }
             })
         }
+        // Replace :param syntax after extraction
         norm_path = URI_PARAM_REGEX.replace_all(&norm_path, "*").to_string();
         norm_path = glob_to_regex(&norm_path);
 
@@ -226,7 +106,7 @@ impl Server {
             handler: Arc::new(handler),
         });
 
-        // Order paths by num /s, str len, and params
+        // Order paths descending so more appropriate url matches match first
         route_handlers.sort_by(|a, b| {
             let a_num_slashes = a.route.path.matches("/").count();
             let b_num_slashes = b.route.path.matches("/").count();
@@ -246,8 +126,6 @@ impl Server {
             }
             comparison
         });
-
-        println!("{:?}", route_handlers)
     }
 
     pub async fn start(&self) -> Result<(), Box<dyn Error>> {
@@ -266,51 +144,54 @@ impl Server {
 
             println!("Incoming request from {}", incoming.ip().to_string());
 
+            // Don't consume self.handlers on an async task!
             let handlers = self.handlers.clone();
-
             tokio::spawn(async move {
                 let mut request: Request;
 
                 let mut all_stream_data = Vec::new();
                 loop {
-                    let mut buffer: [u8; 8192] = [0; 8192]; // 8kb
+                    let mut buffer: [u8; ONE_KB * 8] = [0; ONE_KB * 8];
                     let num_bytes = stream.read(&mut buffer).await;
                     all_stream_data.extend(&buffer);
 
                     if num_bytes.unwrap() == 0 {
-                        // End of request
-                        return;
+                        println!("Error: End of TCP stream, probably wasn't a valid HTTP request");
+                        return Err(());
+                    }
+                    if all_stream_data.len() > ONE_MB {
+                        println!("Error: Request bigger than 1MB");
+                        return Err(());
                     }
 
                     let request_match = parse_request(&all_stream_data);
-
-                    request = match request_match {
-                        Ok(req) => req,
+                    match request_match {
+                        Ok(req) => {
+                            request = req;
+                            break;
+                        }
                         _ => continue, // Incomplete request
                     };
-                    break;
                 }
 
                 for val in handlers.get(&request.method).unwrap_or(&Vec::new()).iter() {
                     let pattern = Regex::new(&val.route.path).unwrap();
                     let is_match = pattern.is_match(&request.path);
                     if is_match {
+                        // Param extraction from request
                         if val.route.params.len() != 0 {
-                            fn extract_nth_segment(url_path: &str, n: usize) -> Option<String> {
-                                let pattern = format!(r"^(?:[^/]*/){{{}}}(\w+)", n); // Replace {N} dynamically
-                                let regex = Regex::new(&pattern).unwrap();
-
-                                regex.captures(url_path).map(|cap| cap[1].to_string())
-                            }
                             for param in val.route.params.iter() {
-                                let maybe_param_value =
-                                    extract_nth_segment(&request.path, param.num_slashes_before);
+                                let maybe_param_value = extract_nth_segment_from_url(
+                                    &request.path,
+                                    param.num_slashes_before,
+                                );
                                 if let Some(param_value) = maybe_param_value {
                                     request.params.insert(param.name.to_string(), param_value);
                                 }
                             }
                         }
 
+                        // Send response
                         let maybe_response = (val.handler)(request.clone()).await;
                         match maybe_response {
                             Some(response) => {
@@ -321,6 +202,7 @@ impl Server {
                         }
                     }
                 }
+                Ok(())
             });
         }
 
@@ -375,10 +257,7 @@ impl Server {
             let query: HashMap<String, String> = url.query_pairs().into_owned().collect();
             url.set_query(None);
 
-            let mut path = url.path().to_string();
-            if !path.ends_with("/") {
-                path.push_str("/")
-            }
+            let path = normalise_path(&url.path());
             Ok(Request {
                 path,
                 version,
@@ -389,8 +268,5 @@ impl Server {
                 query,
             })
         }
-        // Create TCP listener
-        // On call spawn tokio task
-        //   tokio task parses tcp to html, calls all middleware and the correct handler
     }
 }
