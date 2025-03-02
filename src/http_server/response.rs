@@ -14,15 +14,15 @@ pub struct Response {
 impl Response {
     // PUBLIC
     pub fn new() -> Self {
-        return Self {
+        Self {
             headers: Response::get_default_headers(),
             body: None,
             status_code: 200,
             status_text: get_status_text(200).to_owned(),
-        };
+        }
     }
     pub fn get_body_as_string(&self) -> String {
-        return String::from_utf8(self.body.clone().unwrap_or_default()).unwrap();
+        String::from_utf8(self.body.clone().unwrap_or_default()).unwrap()
     }
     pub fn set_status_code(&mut self, code: u16) {
         self.status_code = code;

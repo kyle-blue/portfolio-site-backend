@@ -20,7 +20,7 @@ route!(id_handler, |request: Request| {
 
 route!(catch_all_other_handler, |request: Request| {
     let mut response = Response::new();
-    let body = format!("{}", request.path);
+    let body = request.path;
     response.set_body(body.into_bytes());
     Some(response)
 });
