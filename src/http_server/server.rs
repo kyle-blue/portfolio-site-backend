@@ -76,7 +76,7 @@ impl Server {
     }
 
     pub fn route(&mut self, method: HttpMethod, path: &str, handler: RouteHandlerFunc) {
-        let mut norm_path = normalise_path(&path);
+        let mut norm_path = normalise_path(path);
         let route_handlers = self.handlers.get_mut(&method).unwrap();
 
         // Extract request params if they exist
@@ -129,10 +129,10 @@ impl Server {
     }
 
     pub async fn start(&self) -> Result<(), Box<dyn Error>> {
-        let address = format!("127.0.0.1:{}", self.port);
+        let address = format!("0.0.0.0:{}", self.port);
         let listener = TcpListener::bind(&address)
             .await
-            .expect(format!("Could not bind TCP listener to: {}", address).as_str());
+            .unwrap_or_else(|_| panic!("Could not bind TCP listener to: {}", address));
 
         println!("Accepting incoming connections on {}", address);
 
@@ -142,7 +142,7 @@ impl Server {
                 .await
                 .expect("Could not accept connection");
 
-            println!("Incoming request from {}", incoming.ip().to_string());
+            println!("Incoming request from {}", incoming.ip());
 
             // Don't consume self.handlers on an async task!
             let handlers = self.handlers.clone();
@@ -179,7 +179,7 @@ impl Server {
                     let is_match = pattern.is_match(&request.path);
                     if is_match {
                         // Param extraction from request
-                        if val.route.params.len() != 0 {
+                        if !val.route.params.is_empty() {
                             for param in val.route.params.iter() {
                                 let maybe_param_value = extract_nth_segment_from_url(
                                     &request.path,
@@ -193,12 +193,9 @@ impl Server {
 
                         // Send response
                         let maybe_response = (val.handler)(request.clone()).await;
-                        match maybe_response {
-                            Some(response) => {
-                                return_response(response, &mut stream).await;
-                                break;
-                            }
-                            None => {}
+                        if let Some(response) = maybe_response {
+                            return_response(response, &mut stream).await;
+                            break;
                         }
                     }
                 }
@@ -220,15 +217,15 @@ impl Server {
                 response.get_body_as_string(),
             );
 
-            stream.write(response_string.as_bytes()).await.unwrap();
+            let _ = stream.write(response_string.as_bytes()).await.unwrap();
             stream.flush().await.unwrap();
         }
 
-        fn parse_request(buffer: &Vec<u8>) -> Result<Request, Box<dyn std::error::Error>> {
+        fn parse_request(buffer: &[u8]) -> Result<Request, Box<dyn std::error::Error>> {
             let mut headers = [httparse::EMPTY_HEADER; 64];
             let mut req = httparse::Request::new(&mut headers);
 
-            let res = match req.parse(&buffer)? {
+            let res = match req.parse(buffer)? {
                 httparse::Status::Complete(amt) => amt,
                 httparse::Status::Partial => {
                     return Err("Request is incomplete".into());
@@ -257,7 +254,7 @@ impl Server {
             let query: HashMap<String, String> = url.query_pairs().into_owned().collect();
             url.set_query(None);
 
-            let path = normalise_path(&url.path());
+            let path = normalise_path(url.path());
             Ok(Request {
                 path,
                 version,
