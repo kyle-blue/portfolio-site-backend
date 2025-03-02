@@ -11,12 +11,11 @@ pub fn glob_to_regex(glob: &str) -> String {
 }
 
 pub fn normalise_path(path: &str) -> String {
-    let norm_path = if path.ends_with("/") {
+    if path.ends_with("/") {
         path.to_string()
     } else {
         format!("{}/", path)
-    };
-    norm_path
+    }
 }
 
 pub fn extract_nth_segment_from_url(url_path: &str, n: usize) -> Option<String> {
