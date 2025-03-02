@@ -2,6 +2,7 @@
 name = "portfolio-site-backend"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.85.0"
 
 [dependencies]
 chrono = "0.4.39"
