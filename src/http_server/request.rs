@@ -15,6 +15,6 @@ pub struct Request {
 
 impl Request {
     pub fn get_body_as_string(&self) -> String {
-        return String::from_utf8(self.body.clone().unwrap_or_default()).unwrap();
+        String::from_utf8(self.body.clone().unwrap_or_default()).unwrap()
     }
 }
