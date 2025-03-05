@@ -15,6 +15,7 @@ FROM rust:1.85.0-slim-bullseye AS dev
 WORKDIR /app/
 COPY ./ /app/
 RUN rm -Rf target && rm -Rf .git && rm -Rf .github
+RUN rustup toolchain install stable-x86_64-unknown-linux-gnu
 RUN cargo install --locked cargo-watch@8.5.3
 RUN cargo build
 EXPOSE 8080
