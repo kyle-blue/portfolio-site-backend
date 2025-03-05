@@ -33,3 +33,13 @@ jobs:
           password: ${{ secrets.GITLAB_TOKEN }}
       - run: docker build --target dev -t registry.gitlab.com/bigboiblue/kblue-io-registry/backend-dev:latest .
       - run: docker push registry.gitlab.com/bigboiblue/kblue-io-registry/backend-dev:latest
+  rollout:
+    runs-on: ubuntu-latest
+    container: bitnami/kubectl:1.32.2
+    needs:
+      - push_to_registry
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p ~/.kube
+      - run: echo "${{ secrets.KUBE_CONFIG }}" > ~/.kube/config
+      - run: kubectl rollout restart deployment/backend -n app
