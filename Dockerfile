@@ -1,6 +1,7 @@
 FROM rust:1.85.0-slim-bullseye AS build
 WORKDIR /app/
 COPY ./ /app/
+RUN rustup toolchain install stable-x86_64-unknown-linux-gnu
 RUN rm -Rf target
 RUN cargo build --release
 
