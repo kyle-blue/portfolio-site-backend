@@ -31,6 +31,12 @@ impl Response {
     pub fn set_body(&mut self, data: Vec<u8>) {
         self.body = Some(data);
     }
+    pub fn set_body_string(&mut self, data: String) {
+        self.body = Some(data.into_bytes());
+    }
+    pub fn set_body_str(&mut self, data: &str) {
+        self.body = Some(data.as_bytes().to_vec());
+    }
     pub fn add_header(&mut self, key: &str, value: &str) {
         self.headers
             .insert(key.to_string().to_lowercase(), value.to_string());
