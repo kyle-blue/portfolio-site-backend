@@ -2,8 +2,10 @@
 macro_rules! route {
     ($function_name:ident, $handler_block:expr) => {
         #[allow(unused_variables)]
-        fn $function_name(request: Request) -> RouteHandlerReturn {
-            return Box::pin(async move { $handler_block(request) });
+        pub fn $function_name(
+            request: crate::http_server::Request,
+        ) -> crate::http_server::RouteHandlerReturn {
+            return Box::pin($handler_block(request));
         }
     };
 }
