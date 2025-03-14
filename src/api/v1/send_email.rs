@@ -1,4 +1,4 @@
-use crate::http_server::{Request, Response};
+use crate::http_server::{RequestParam, Response, ResponseParam};
 use crate::route;
 
 use mail_send::mail_builder::MessageBuilder;
@@ -82,27 +82,29 @@ async fn create_smtp_client() -> SmtpClient<TlsStream<TcpStream>> {
         .unwrap()
 }
 
-route!(send_email_handler, async move |request: Request| {
-    let mut response = Response::new();
-    let maybe_email_info: Option<EmailInfo> = request.get_body_as_json();
-    if let Some(email_info) = maybe_email_info {
-        let mut smtp_client = create_smtp_client().await;
-        let message =
-            get_client_email_message(&email_info.name, &email_info.message, &email_info.email);
-        let result1 = smtp_client.send(message).await;
-        let message =
-            get_my_email_message(&email_info.name, &email_info.message, &email_info.email);
-        let result2 = smtp_client.send(message).await;
+route!(
+    send_email_handler,
+    async move |request: RequestParam, mut response: ResponseParam| {
+        let maybe_email_info: Option<EmailInfo> = request.get_body_as_json();
+        if let Some(email_info) = maybe_email_info {
+            let mut smtp_client = create_smtp_client().await;
+            let message =
+                get_client_email_message(&email_info.name, &email_info.message, &email_info.email);
+            let result1 = smtp_client.send(message).await;
+            let message =
+                get_my_email_message(&email_info.name, &email_info.message, &email_info.email);
+            let result2 = smtp_client.send(message).await;
 
-        if result1.is_ok() && result2.is_ok() {
-            response.set_body_str("{\"message\": \"success\"}");
+            if result1.is_ok() && result2.is_ok() {
+                response.set_body_str("{\"message\": \"success\"}");
+            } else {
+                response.set_body_str("{\"message\": \"could not successfully send emails\"}");
+                response.set_status_code(500);
+            }
         } else {
-            response.set_body_str("{\"message\": \"could not successfully send emails\"}");
-            response.set_status_code(500);
+            response.set_body_str("{\"message\": \"could not deserialise json body\"}");
+            response.set_status_code(400);
         }
-    } else {
-        response.set_body_str("{\"message\": \"could not deserialise json body\"}");
-        response.set_status_code(400);
+        response.send();
     }
-    Some(response)
-});
+);

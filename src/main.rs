@@ -11,11 +11,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .expect("Failed to install rustls crypto provider");
 
     let mut server = Server::new(8080);
-    server.route(
-        HttpMethod::POST,
-        "/api/v1/send_email",
-        api::v1::send_email_handler,
-    );
+    server
+        .route(
+            HttpMethod::POST,
+            "/api/v1/send_email",
+            api::v1::send_email_handler,
+        )
+        .await;
+
     server.start().await?;
 
     Ok(())
