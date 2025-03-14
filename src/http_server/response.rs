@@ -10,6 +10,7 @@ pub struct Response {
     pub body: Option<Vec<u8>>,
     pub status_code: u16,
     pub status_text: String,
+    _should_respond: bool,
 }
 impl Response {
     // PUBLIC
@@ -19,6 +20,7 @@ impl Response {
             body: None,
             status_code: 200,
             status_text: get_status_text(200).to_owned(),
+            _should_respond: false,
         }
     }
     pub fn get_body_as_string(&self) -> String {
@@ -40,6 +42,13 @@ impl Response {
     pub fn add_header(&mut self, key: &str, value: &str) {
         self.headers
             .insert(key.to_string().to_lowercase(), value.to_string());
+    }
+    // Send the response and stop propogating routes / middleware
+    pub fn send(&mut self) {
+        self._should_respond = true;
+    }
+    pub fn should_respond(&self) -> bool {
+        return self._should_respond;
     }
 
     // PRIVATE
