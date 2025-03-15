@@ -34,8 +34,8 @@ pub type ResponseParam<'a> = MutexGuard<'a, Response>;
 // Each function is an Arc, since they must live as long as someone owns one. No need for mutex since they aren't mutable
 // If an async function borrows something, that thing must live as long as the function, so for Arc that must be static or Arc.
 // Request and response are scoped to the tokio::task, which will die when it dies, so we must wrap in an Arc. We mutate them, so mutex (we lock beforehand hence mutexguard).
-pub type MiddlewareFunc = Arc<fn(Arc<Mutex<Request>>, Arc<Mutex<Response>>) -> AsyncFuncReturn<()>>;
-type Middlewares = Vec<MiddlewareFunc>;
+pub type MiddlewareFunc = fn(Arc<Mutex<Request>>, Arc<Mutex<Response>>) -> AsyncFuncReturn<()>;
+type Middlewares = Vec<Arc<MiddlewareFunc>>;
 
 pub type RouteHandlerFunc = fn(Arc<Mutex<Request>>, Arc<Mutex<Response>>) -> AsyncFuncReturn<()>;
 type RouteHandlers = HashMap<HttpMethod, Vec<RouteAndHandler>>;
@@ -81,7 +81,7 @@ impl Server {
         }
     }
 
-    pub async fn route(&mut self, method: HttpMethod, path: &str, handler: RouteHandlerFunc) {
+    pub fn route(&mut self, method: HttpMethod, path: &str, handler: RouteHandlerFunc) {
         let mut norm_path = normalise_path(path);
         let mut handlers_for_method = self.handlers.get_mut(&method).unwrap();
 
@@ -134,8 +134,8 @@ impl Server {
         });
     }
 
-    pub async fn add_middleware(&mut self, handler: MiddlewareFunc) {
-        self.middlewares.push(handler);
+    pub fn add_middleware(&mut self, handler: MiddlewareFunc) {
+        self.middlewares.push(Arc::new(handler));
     }
 
     pub async fn start(&self) -> Result<(), Box<dyn Error>> {
@@ -197,6 +197,16 @@ impl Server {
                     );
                 }
 
+                // Loop middlewares
+                for middleware in middlewares.iter() {
+                    let maybe_response = middleware(request.clone(), response.clone()).await;
+                    let locked_response = response.lock().await;
+                    if locked_response.should_respond() {
+                        Server::return_response(locked_response, &mut stream).await;
+                        return Ok(());
+                    }
+                }
+
                 for handler in handlers.get(&request_method).unwrap_or(&Vec::new()).iter() {
                     let pattern = Regex::new(&handler.route.path).unwrap();
                     let is_match = pattern.is_match(&request_path);
@@ -215,17 +225,6 @@ impl Server {
                                         .params
                                         .insert(param.name.to_string(), param_value);
                                 }
-                            }
-                        }
-
-                        // Loop middlewares
-                        for middleware in middlewares.iter() {
-                            let maybe_response =
-                                middleware(request.clone(), response.clone()).await;
-                            let locked_response = response.lock().await;
-                            if locked_response.should_respond() {
-                                Server::return_response(locked_response, &mut stream).await;
-                                return Ok(());
                             }
                         }
 
