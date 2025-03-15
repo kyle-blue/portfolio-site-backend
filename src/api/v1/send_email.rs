@@ -1,4 +1,6 @@
-use crate::http_server::{RequestParam, Response, ResponseParam};
+use std::env;
+
+use crate::http_server::{RequestParam, ResponseParam};
 use crate::route;
 
 use mail_send::mail_builder::MessageBuilder;
@@ -36,7 +38,6 @@ fn get_client_email_message<'a>(
     ", name, message, email_address);
 
     MessageBuilder::new()
-        .from(("Kyle Doidge", "kyle.doidge.bot@gmail.com"))
         .to(vec![("", email_address)])
         .subject("Thank you for your message! - kblue.io")
         .html_body(body)
@@ -64,7 +65,6 @@ fn get_my_email_message<'a>(
     ", name, message, email_address);
 
     MessageBuilder::new()
-        .from(("Kblue Bot", "kyle.doidge.bot@gmail.com"))
         .to(vec![("", "kyle.blue.nuttall@gmail.com")])
         .subject(format!(
             "{} - {} sent you a message on kblue.io!",
@@ -74,9 +74,11 @@ fn get_my_email_message<'a>(
 }
 
 async fn create_smtp_client() -> SmtpClient<TlsStream<TcpStream>> {
+    let email_password = env::var("EMAIL_PASSWORD").unwrap();
+
     SmtpClientBuilder::new("smtp.gmail.com", 587)
         .implicit_tls(false)
-        .credentials(("kyle.blue.doidge.bot@gmail.com", "kkhcuhyjqianrvzv"))
+        .credentials(("kyle.blue.doidge.bot@gmail.com", email_password.as_str()))
         .connect()
         .await
         .unwrap()
@@ -87,12 +89,16 @@ route!(
     async move |request: RequestParam, mut response: ResponseParam| {
         let maybe_email_info: Option<EmailInfo> = request.get_body_as_json();
         if let Some(email_info) = maybe_email_info {
+            let bot_email = env::var("EMAIL_ADDRESS").unwrap();
             let mut smtp_client = create_smtp_client().await;
             let message =
-                get_client_email_message(&email_info.name, &email_info.message, &email_info.email);
+                get_client_email_message(&email_info.name, &email_info.message, &email_info.email)
+                    .from(("Kyle Doidge", bot_email.as_str()));
             let result1 = smtp_client.send(message).await;
             let message =
-                get_my_email_message(&email_info.name, &email_info.message, &email_info.email);
+                get_my_email_message(&email_info.name, &email_info.message, &email_info.email)
+                    .from(("KBlue Bot", bot_email.as_str()));
+
             let result2 = smtp_client.send(message).await;
 
             if result1.is_ok() && result2.is_ok() {
