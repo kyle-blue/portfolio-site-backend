@@ -1,6 +1,6 @@
-use strum_macros::EnumIter;
+use strum_macros::{Display, EnumIter};
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, EnumIter)]
+#[derive(Display, Debug, Clone, Default, PartialEq, Eq, Hash, EnumIter)]
 #[allow(clippy::upper_case_acronyms)]
 pub enum HttpMethod {
     #[default]
