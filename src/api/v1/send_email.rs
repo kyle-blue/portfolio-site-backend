@@ -31,7 +31,7 @@ fn get_client_email_message<'a>(
         <div style=\"padding: 0.2rem 1rem\">
             <h2 style=\"font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;\">I have recieved your message:</h2>
             <p style=\"font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-indent: 1rem; white-space: pre-wrap; font-style: italic;\">{}</p>
-            <p style=\"font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;\">I will reply at my earliest convenience through my personal email address (kyle.blue.nuttall@gmail.com) to the email address you provided ({}).</p>
+            <p style=\"font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;\">I will reply at my earliest convenience through my personal email address (kyle.blue.doidge@gmail.com) to the email address you provided ({}).</p>
             <p style=\"font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;\">Thanks!</p>
             <h3 style=\"font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;\">Kyle Doidge - kblue.io</h3>
         </div>
@@ -65,7 +65,7 @@ fn get_my_email_message<'a>(
     ", name, message, email_address);
 
     MessageBuilder::new()
-        .to(vec![("", "kyle.blue.nuttall@gmail.com")])
+        .to(vec![("", "kyle.blue.doidge@gmail.com")])
         .subject(format!(
             "{} - {} sent you a message on kblue.io!",
             name, email_address
